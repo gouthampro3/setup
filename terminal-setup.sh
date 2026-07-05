@@ -534,27 +534,43 @@ export PATH="$TERMINAL_SETUP_HOME/bin:$PATH"
 EOF
 }
 
+tmux_plugin_root() {
+  printf '%s' "$HOME/.config/tmux/plugins"
+}
+
 validate_tpm() {
-  [[ -x "$HOME/.tmux/plugins/tpm/tpm" ]]
+  local plugin_root
+  plugin_root="$(tmux_plugin_root)"
+  [[ -x "$plugin_root/tpm/tpm" ]]
 }
 
 install_tpm() {
-  local tpm_dir="$HOME/.tmux/plugins/tpm"
+  local plugin_root tpm_dir
+  plugin_root="$(tmux_plugin_root)"
+  tpm_dir="$plugin_root/tpm"
 
   if [[ -e "$tpm_dir" && ! -x "$tpm_dir/tpm" ]]; then
     backup_path "$tpm_dir" || return 1
     rm -rf "$tpm_dir" || return 1
   fi
 
-  mkdir -p "$HOME/.tmux/plugins" || return 1
+  mkdir -p "$plugin_root" || return 1
   [[ -e "$tpm_dir" ]] || git clone --depth=1 https://github.com/tmux-plugins/tpm "$tpm_dir" || return 1
 }
 
 validate_tmux_conf() {
-  local conf="$HOME/.tmux.conf"
+  local shim="$HOME/.tmux.conf"
+  local conf="$HOME/.config/tmux/tmux.conf"
+
+  [[ -f "$shim" ]] || return 1
+  grep -Fq "# terminal-setup tmux compatibility shim" "$shim" || return 1
+  grep -Fq "source-file ~/.config/tmux/tmux.conf" "$shim" || return 1
+
   [[ -f "$conf" ]] || return 1
   grep -Fq "# terminal-setup managed tmux config" "$conf" || return 1
   grep -Fq "set -g prefix M-c" "$conf" || return 1
+  grep -Fq "set -s escape-time 10" "$conf" || return 1
+  grep -Fq "bind R source-file ~/.config/tmux/tmux.conf" "$conf" || return 1
   grep -Fq "set -g mouse on" "$conf" || return 1
   grep -Fq "bind h select-pane -L" "$conf" || return 1
   grep -Fq "set-window-option -g mode-keys vi" "$conf" || return 1
@@ -571,9 +587,19 @@ validate_tmux_conf() {
 }
 
 write_tmux_conf() {
+  local conf_dir="$HOME/.config/tmux"
+  local conf="$conf_dir/tmux.conf"
+
   backup_path "$HOME/.tmux.conf" || return 1
+  backup_path "$conf" || return 1
+  mkdir -p "$conf_dir" || return 1
 
   cat >"$HOME/.tmux.conf" <<'EOF'
+# terminal-setup tmux compatibility shim
+source-file ~/.config/tmux/tmux.conf
+EOF
+
+  cat >"$conf" <<'EOF'
 # terminal-setup managed tmux config
 
 # Terminal behavior.
@@ -583,8 +609,10 @@ set -g mouse on
 # Use tmux-sensible defaults through TPM, with the requested prefix override.
 unbind C-b
 unbind C-c
+set -s escape-time 10
 set -g prefix M-c
 bind M-c send-prefix
+bind R source-file ~/.config/tmux/tmux.conf \; display-message "Reloaded ~/.config/tmux/tmux.conf"
 
 # Vim-style pane navigation.
 bind h select-pane -L
@@ -618,6 +646,7 @@ bind % split-window -h -c "#{pane_current_path}"
 
 # Dracula status bar widgets.
 set -g status-position bottom
+set-environment -g TMUX_PLUGIN_MANAGER_PATH "~/.config/tmux/plugins/"
 set -g @dracula-plugins "network weather time"
 set -g @dracula-refresh-rate 5
 set -g @dracula-show-powerline true
@@ -644,26 +673,30 @@ set -g @plugin 'tmux-plugins/tmux-resurrect'
 set -g @plugin 'tmux-plugins/tmux-prefix-highlight'
 set -g @plugin 'dracula/tmux'
 
-run '~/.tmux/plugins/tpm/tpm'
+run '~/.config/tmux/plugins/tpm/tpm'
 EOF
 }
 
 validate_tmux_plugins() {
-  [[ -d "$HOME/.tmux/plugins/tmux-sensible" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux-autoreload" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux-menus" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux-sidebar" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux-mighty-scroll" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux-resurrect" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux-prefix-highlight" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/vim-tmux-navigator" ]] || return 1
-  [[ -d "$HOME/.tmux/plugins/tmux" ]] || return 1
+  local plugin_root
+  plugin_root="$(tmux_plugin_root)"
+  [[ -d "$plugin_root/tmux-sensible" ]] || return 1
+  [[ -d "$plugin_root/tmux-autoreload" ]] || return 1
+  [[ -d "$plugin_root/tmux-menus" ]] || return 1
+  [[ -d "$plugin_root/tmux-sidebar" ]] || return 1
+  [[ -d "$plugin_root/tmux-mighty-scroll" ]] || return 1
+  [[ -d "$plugin_root/tmux-resurrect" ]] || return 1
+  [[ -d "$plugin_root/tmux-prefix-highlight" ]] || return 1
+  [[ -d "$plugin_root/vim-tmux-navigator" ]] || return 1
+  [[ -d "$plugin_root/tmux" ]] || return 1
 }
 
 install_tmux_plugin_repo() {
   local repo="$1"
   local dirname="$2"
-  local target="$HOME/.tmux/plugins/$dirname"
+  local plugin_root target
+  plugin_root="$(tmux_plugin_root)"
+  target="$plugin_root/$dirname"
 
   if [[ -e "$target" ]]; then
     return 0
@@ -673,7 +706,9 @@ install_tmux_plugin_repo() {
 }
 
 install_tmux_plugins() {
-  mkdir -p "$HOME/.tmux/plugins" || return 1
+  local plugin_root
+  plugin_root="$(tmux_plugin_root)"
+  mkdir -p "$plugin_root" || return 1
 
   install_tmux_plugin_repo tmux-plugins/tmux-sensible tmux-sensible || return 1
   install_tmux_plugin_repo christoomey/vim-tmux-navigator vim-tmux-navigator || return 1
@@ -686,7 +721,7 @@ install_tmux_plugins() {
   install_tmux_plugin_repo dracula/tmux tmux || return 1
 
   if tmux list-sessions >/dev/null 2>&1; then
-    tmux source-file "$HOME/.tmux.conf" || true
+    tmux source-file "$HOME/.config/tmux/tmux.conf" || true
   fi
 }
 

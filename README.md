@@ -41,3 +41,6 @@ and temperature, and date/time.
 
 - Logs and retry state: `/tmp/terminal-setup-$USER`
 - Persistent tools and backups: `~/Scripts/terminal-setup`
+- tmux source config: `~/.config/tmux/tmux.conf`
+- tmux compatibility shim: `~/.tmux.conf`
+- tmux plugins: `~/.config/tmux/plugins`
