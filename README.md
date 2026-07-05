@@ -48,4 +48,4 @@ and temperature, and date/time.
 - Persistent tools and backups: `~/Scripts/terminal-setup`
 - tmux source config: `~/.config/tmux/tmux.conf`
 - tmux compatibility shim: `~/.tmux.conf`
-- tmux plugins: `~/.config/tmux/plugins`
+- tmux plugins: `~/.config/.tmux/plugins`

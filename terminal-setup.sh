@@ -707,7 +707,7 @@ EOF
 }
 
 tmux_plugin_root() {
-  printf '%s' "$HOME/.config/tmux/plugins"
+  printf '%s' "$HOME/.config/.tmux/plugins"
 }
 
 validate_tpm() {
@@ -746,6 +746,7 @@ validate_tmux_conf() {
   grep -Fq "set -g mouse on" "$conf" || return 1
   grep -Fq "bind h select-pane -L" "$conf" || return 1
   grep -Fq "set-window-option -g mode-keys vi" "$conf" || return 1
+  grep -Fq 'set-environment -g TMUX_PLUGIN_MANAGER_PATH "~/.config/.tmux/plugins/"' "$conf" || return 1
   grep -Fq "set -g @dracula-plugins \"network weather time\"" "$conf" || return 1
   grep -Fq "tmux-plugins/tmux-sensible" "$conf" || return 1
   grep -Fq "christoomey/vim-tmux-navigator" "$conf" || return 1
@@ -756,6 +757,7 @@ validate_tmux_conf() {
   grep -Fq "tmux-plugins/tmux-resurrect" "$conf" || return 1
   grep -Fq "tmux-plugins/tmux-prefix-highlight" "$conf" || return 1
   grep -Fq "dracula/tmux" "$conf" || return 1
+  grep -Fq "run '~/.config/.tmux/plugins/tpm/tpm'" "$conf" || return 1
 }
 
 write_tmux_conf() {
@@ -818,7 +820,7 @@ bind % split-window -h -c "#{pane_current_path}"
 
 # Dracula status bar widgets.
 set -g status-position bottom
-set-environment -g TMUX_PLUGIN_MANAGER_PATH "~/.config/tmux/plugins/"
+set-environment -g TMUX_PLUGIN_MANAGER_PATH "~/.config/.tmux/plugins/"
 set -g @dracula-plugins "network weather time"
 set -g @dracula-refresh-rate 5
 set -g @dracula-show-powerline true
@@ -845,7 +847,7 @@ set -g @plugin 'tmux-plugins/tmux-resurrect'
 set -g @plugin 'tmux-plugins/tmux-prefix-highlight'
 set -g @plugin 'dracula/tmux'
 
-run '~/.config/tmux/plugins/tpm/tpm'
+run '~/.config/.tmux/plugins/tpm/tpm'
 EOF
 }
 
