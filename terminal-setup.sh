@@ -24,7 +24,7 @@ SKIP_TREE_SITTER=0
 usage() {
   cat <<EOF
 Usage:
-  $SCRIPT_NAME [--zsh] [--tmux] [--neovim] [--all] [--skip-tree-sitter] [prompt-name]
+  $SCRIPT_NAME [--zsh] [--tmux] [--neovim] [--all] [--skip-tree-sitter] [prompt-prefix]
 
 Installs and configures zsh, Oh My Zsh, tmux, TPM plugins, Neovim, and LazyVim.
 
@@ -37,9 +37,9 @@ Setup scopes:
   --skip-tree-sitter
                 Skip optional tree-sitter CLI setup for LazyVim parser tooling.
 
-Prompt name:
-  Required when --zsh is selected or when no scope is given.
-  Optional and ignored for --tmux/--neovim-only runs.
+Prompt prefix:
+  Optional word to prepend to the robbyrussell prompt without replacing the
+  robbyrussell theme.
 
 State and logs:
   $TMP_ROOT
@@ -118,16 +118,8 @@ parse_args() {
     RUN_NEOVIM=1
   fi
 
-  if (( RUN_ZSH == 1 )) && [[ -z "$PROMPT_NAME" ]]; then
-    printf 'A prompt-name is required for zsh setup.\n\n' >&2
-    usage >&2
-    exit 2
-  fi
-
-  if [[ -z "$PROMPT_NAME" || "$PROMPT_NAME" == *$'\n'* || "$PROMPT_NAME" == *$'\r'* ]]; then
-    if (( RUN_ZSH == 1 )); then
-      die "prompt-name must be non-empty and must not contain newlines"
-    fi
+  if [[ "$PROMPT_NAME" == *$'\n'* || "$PROMPT_NAME" == *$'\r'* ]]; then
+    die "prompt-prefix must not contain newlines"
   fi
 }
 
@@ -184,16 +176,20 @@ backup_path() {
   log "Backed up $target to $BACKUP_DIR/$backup_name"
 }
 
-zsh_single_quote() {
+zsh_prompt_literal() {
   local value="$1"
-  value="${value//\'/\'\\\'\'}"
+  value="${value//\\/\\\\}"
+  value="${value//%/%%}"
+  value="${value//\$/\\$}"
+  value="${value//\"/\\\"}"
+  value="${value//\`/\\\`}"
   printf "%s" "$value"
 }
 
-zsh_prompt_literal() {
-  local value="$1"
-  value="${value//%/%%}"
-  zsh_single_quote "$value"
+zsh_prompt_prefix_line() {
+  local prompt_name
+  prompt_name="$(zsh_prompt_literal "$PROMPT_NAME")"
+  printf 'PROMPT="%%F{cyan}[%s]%%f ${PROMPT}"' "$prompt_name"
 }
 
 version_ge() {
@@ -464,47 +460,223 @@ install_zsh_plugins() {
 }
 
 validate_zshrc() {
-  local prompt_value
-  prompt_value="$(zsh_single_quote "$PROMPT_NAME")"
-
   [[ -f "$HOME/.zshrc" ]] || return 1
-  grep -Fq "# terminal-setup managed zsh config" "$HOME/.zshrc" || return 1
-  grep -Fq "TERMINAL_SETUP_PROMPT_NAME='$prompt_value'" "$HOME/.zshrc" || return 1
+  grep -Fq 'ZSH_THEME="robbyrussell"' "$HOME/.zshrc" || return 1
   grep -Fq "zsh-autosuggestions" "$HOME/.zshrc" || return 1
   grep -Fq "zsh-syntax-highlighting" "$HOME/.zshrc" || return 1
+  grep -Eq '^[[:space:]]*source[[:space:]]+.*oh-my-zsh\.sh' "$HOME/.zshrc" || return 1
+  grep -Fq 'export TERMINAL_SETUP_HOME="$HOME/Scripts/terminal-setup"' "$HOME/.zshrc" || return 1
+  grep -Fq 'export PATH="$TERMINAL_SETUP_HOME/bin:$PATH"' "$HOME/.zshrc" || return 1
+  ! grep -Fq "# terminal-setup managed zsh config" "$HOME/.zshrc" || return 1
+  ! grep -Fq "TERMINAL_SETUP_PROMPT_NAME=" "$HOME/.zshrc" || return 1
+  validate_zsh_prompt_prefix || return 1
+}
+
+validate_zsh_prompt_prefix() {
+  [[ -n "$PROMPT_NAME" ]] || return 0
+
+  local prompt_line
+  prompt_line="$(zsh_prompt_prefix_line)"
+
+  TERMINAL_SETUP_PROMPT_LINE="$prompt_line" awk '
+    BEGIN {
+      prompt_line = ENVIRON["TERMINAL_SETUP_PROMPT_LINE"]
+    }
+
+    /^[[:space:]]*source[[:space:]]+/ && $0 ~ /oh-my-zsh\.sh/ {
+      seen_source = 1
+    }
+
+    seen_source && $0 == "# terminal-setup managed prompt prefix start" {
+      in_block = 1
+      next
+    }
+
+    in_block && $0 == prompt_line {
+      found_line = 1
+      next
+    }
+
+    in_block && found_line && $0 == "# terminal-setup managed prompt prefix end" {
+      found = 1
+      exit
+    }
+
+    END {
+      exit(found ? 0 : 1)
+    }
+  ' "$HOME/.zshrc"
+}
+
+write_default_zshrc_base() {
+  local template="$HOME/.oh-my-zsh/templates/zshrc.zsh-template"
+
+  if [[ -f "$template" ]]; then
+    cp "$template" "$HOME/.zshrc" || return 1
+    return 0
+  fi
+
+  cat >"$HOME/.zshrc" <<'EOF'
+export ZSH="$HOME/.oh-my-zsh"
+ZSH_THEME="robbyrussell"
+
+plugins=(git)
+
+source "$ZSH/oh-my-zsh.sh"
+EOF
+}
+
+rewrite_zshrc_omz_defaults() {
+  local tmp_zshrc="$SCRATCH_DIR/zshrc.omz-defaults"
+
+  awk '
+    function add_plugin(name) {
+      if (!(name in seen_plugins) && name != "") {
+        seen_plugins[name] = 1
+        plugin_order[++plugin_count] = name
+      }
+    }
+
+    function collect_plugins(line, cleaned, parts, count, i) {
+      cleaned = line
+      sub(/#.*/, "", cleaned)
+      sub(/^[[:space:]]*plugins=\(/, "", cleaned)
+      gsub(/\)/, "", cleaned)
+      count = split(cleaned, parts, /[[:space:]]+/)
+      for (i = 1; i <= count; i++) {
+        add_plugin(parts[i])
+      }
+    }
+
+    function print_required_plugins() {
+      add_plugin("git")
+      add_plugin("zsh-autosuggestions")
+      add_plugin("zsh-syntax-highlighting")
+      print "plugins=("
+      for (i = 1; i <= plugin_count; i++) {
+        print "  " plugin_order[i]
+      }
+      print ")"
+      plugins_done = 1
+    }
+
+    function print_missing_before_source() {
+      if (!zsh_done) {
+        print "export ZSH=\"$HOME/.oh-my-zsh\""
+        zsh_done = 1
+      }
+      if (!theme_done) {
+        print "ZSH_THEME=\"robbyrussell\""
+        theme_done = 1
+      }
+      if (!plugins_done) {
+        print_required_plugins()
+      }
+      missing_printed = 1
+    }
+
+    /^[[:space:]]*export[[:space:]]+ZSH=/ {
+      print "export ZSH=\"$HOME/.oh-my-zsh\""
+      zsh_done = 1
+      next
+    }
+
+    /^[[:space:]]*ZSH_THEME=/ {
+      print "ZSH_THEME=\"robbyrussell\""
+      theme_done = 1
+      next
+    }
+
+    /^[[:space:]]*plugins=\(/ {
+      collect_plugins($0)
+      if ($0 !~ /\)/) {
+        in_plugins = 1
+        next
+      }
+      print_required_plugins()
+      next
+    }
+
+    in_plugins {
+      collect_plugins($0)
+      if ($0 ~ /\)/) {
+        in_plugins = 0
+        print_required_plugins()
+      }
+      next
+    }
+
+    /^[[:space:]]*TERMINAL_SETUP_PROMPT_NAME=/ { next }
+    /^PROMPT='\''%F\{cyan\}/ { next }
+    /^RPROMPT='\'''\''$/ { next }
+
+    /^[[:space:]]*source[[:space:]]+/ && $0 ~ /oh-my-zsh\.sh/ {
+      print_missing_before_source()
+      print "source \"$ZSH/oh-my-zsh.sh\""
+      source_done = 1
+      next
+    }
+
+    { print }
+
+    END {
+      if (!missing_printed) {
+        print_missing_before_source()
+      }
+      if (!source_done) {
+        print "source \"$ZSH/oh-my-zsh.sh\""
+      }
+    }
+  ' "$HOME/.zshrc" >"$tmp_zshrc" || return 1
+
+  cp "$tmp_zshrc" "$HOME/.zshrc" || return 1
 }
 
 write_zshrc() {
-  local prompt_name_quoted prompt_literal
-  prompt_name_quoted="$(zsh_single_quote "$PROMPT_NAME")"
-  prompt_literal="$(zsh_prompt_literal "$PROMPT_NAME")"
-
   backup_path "$HOME/.zshrc" || return 1
 
-  cat >"$HOME/.zshrc" <<EOF
-# terminal-setup managed zsh config
-# Generated by $SCRIPT_NAME on $(date -u +%Y-%m-%dT%H:%M:%SZ)
+  if [[ ! -f "$HOME/.zshrc" ]] || grep -Fq "# terminal-setup managed zsh config" "$HOME/.zshrc"; then
+    write_default_zshrc_base || return 1
+  fi
 
-# terminal-setup managed PATH start
-export TERMINAL_SETUP_HOME="\$HOME/Scripts/terminal-setup"
-export PATH="\$TERMINAL_SETUP_HOME/bin:\$PATH"
-# terminal-setup managed PATH end
+  rewrite_zshrc_omz_defaults || return 1
+  write_zsh_prompt_prefix || return 1
+  write_terminal_setup_path || return 1
+}
 
-export ZSH="\$HOME/.oh-my-zsh"
-ZSH_THEME=""
+write_zsh_prompt_prefix() {
+  local tmp_zshrc="$SCRATCH_DIR/zshrc.without-prompt-prefix"
+  local tmp_with_prompt="$SCRATCH_DIR/zshrc.with-prompt-prefix"
+  local prompt_line
 
-plugins=(
-  git
-  zsh-autosuggestions
-  zsh-syntax-highlighting
-)
+  sed '/# terminal-setup managed prompt prefix start/,/# terminal-setup managed prompt prefix end/d' "$HOME/.zshrc" >"$tmp_zshrc" || return 1
+  cp "$tmp_zshrc" "$HOME/.zshrc" || return 1
 
-source "\$ZSH/oh-my-zsh.sh"
+  [[ -n "$PROMPT_NAME" ]] || return 0
 
-TERMINAL_SETUP_PROMPT_NAME='$prompt_name_quoted'
-PROMPT='%F{cyan}$prompt_literal%f:%F{blue}%~%f %# '
-RPROMPT=''
-EOF
+  prompt_line="$(zsh_prompt_prefix_line)"
+  TERMINAL_SETUP_PROMPT_LINE="$prompt_line" awk '
+    BEGIN {
+      prompt_line = ENVIRON["TERMINAL_SETUP_PROMPT_LINE"]
+    }
+
+    {
+      print
+      if (!inserted && $0 ~ /^[[:space:]]*source[[:space:]]+/ && $0 ~ /oh-my-zsh\.sh/) {
+        print ""
+        print "# terminal-setup managed prompt prefix start"
+        print prompt_line
+        print "# terminal-setup managed prompt prefix end"
+        inserted = 1
+      }
+    }
+
+    END {
+      exit(inserted ? 0 : 1)
+    }
+  ' "$HOME/.zshrc" >"$tmp_with_prompt" || return 1
+
+  cp "$tmp_with_prompt" "$HOME/.zshrc" || return 1
 }
 
 validate_terminal_setup_path() {
