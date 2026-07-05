@@ -16,6 +16,7 @@ Run only part of the setup:
 ./terminal-setup.sh --zsh my-prompt-name
 ./terminal-setup.sh --tmux
 ./terminal-setup.sh --neovim
+./terminal-setup.sh --neovim --skip-tree-sitter
 ```
 
 Flags can be combined:
@@ -29,6 +30,9 @@ Flags can be combined:
 - Oh My Zsh with autosuggestions and syntax highlighting
 - tmux with TPM, Dracula theme, and selected plugins
 - Neovim with LazyVim
+
+Tree-sitter CLI is attempted for LazyVim parser tooling, but it is optional for this script.
+Use `--skip-tree-sitter` if the machine is too old for available binaries/packages.
 
 ## Files
 

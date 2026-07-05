@@ -19,11 +19,12 @@ RUN_ZSH=0
 RUN_TMUX=0
 RUN_NEOVIM=0
 REQUESTED_SCOPE=0
+SKIP_TREE_SITTER=0
 
 usage() {
   cat <<EOF
 Usage:
-  $SCRIPT_NAME [--zsh] [--tmux] [--neovim] [--all] [prompt-name]
+  $SCRIPT_NAME [--zsh] [--tmux] [--neovim] [--all] [--skip-tree-sitter] [prompt-name]
 
 Installs and configures zsh, Oh My Zsh, tmux, TPM plugins, Neovim, and LazyVim.
 
@@ -33,6 +34,8 @@ Setup scopes:
   --neovim      Install Neovim, tree-sitter CLI, LazyVim, and PATH support.
   --nvim        Alias for --neovim.
   --all         Run every setup scope. This is the default when no scope is given.
+  --skip-tree-sitter
+                Skip optional tree-sitter CLI setup for LazyVim parser tooling.
 
 Prompt name:
   Required when --zsh is selected or when no scope is given.
@@ -88,6 +91,9 @@ parse_args() {
         RUN_TMUX=1
         RUN_NEOVIM=1
         REQUESTED_SCOPE=1
+        ;;
+      --skip-tree-sitter)
+        SKIP_TREE_SITTER=1
         ;;
       -*)
         printf 'Unknown option: %s\n\n' "$1" >&2
@@ -246,6 +252,19 @@ run_step() {
   return 1
 }
 
+run_optional_step() {
+  local name="$1"
+  local validator="$2"
+  local action="$3"
+
+  if run_step "$name" "$validator" "$action"; then
+    return 0
+  fi
+
+  log "Optional setup failed and will be skipped: $name"
+  return 0
+}
+
 has_c_compiler() {
   command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1
 }
@@ -295,6 +314,28 @@ install_packages() {
       ;;
     *)
       printf 'Unsupported package manager: %s\n' "$PACKAGE_MANAGER" >&2
+      return 1
+      ;;
+  esac
+}
+
+package_available() {
+  local package_name="$1"
+
+  case "$PACKAGE_MANAGER" in
+    apt)
+      apt-cache show "$package_name" >/dev/null 2>&1
+      ;;
+    dnf)
+      dnf list --available "$package_name" >/dev/null 2>&1 || dnf list --installed "$package_name" >/dev/null 2>&1
+      ;;
+    yum)
+      yum list available "$package_name" >/dev/null 2>&1 || yum list installed "$package_name" >/dev/null 2>&1
+      ;;
+    brew)
+      brew info "$package_name" >/dev/null 2>&1
+      ;;
+    *)
       return 1
       ;;
   esac
@@ -571,8 +612,19 @@ asset_arch_for_neovim() {
   esac
 }
 
+install_neovim_archive() {
+  local url="$1"
+  local archive="$SCRATCH_DIR/nvim.tar.gz"
+
+  rm -rf "$SCRATCH_DIR/nvim-extract" "$PERSIST_DIR/neovim" || return 1
+  mkdir -p "$SCRATCH_DIR/nvim-extract" "$PERSIST_DIR/neovim" "$BIN_DIR" || return 1
+  curl -fL "$url" -o "$archive" || return 1
+  tar -xzf "$archive" -C "$PERSIST_DIR/neovim" --strip-components=1 || return 1
+  ln -sfn "$PERSIST_DIR/neovim/bin/nvim" "$BIN_DIR/nvim" || return 1
+}
+
 install_neovim() {
-  local os_name arch url archive
+  local os_name arch primary_url fallback_url
   os_name="$(uname -s)"
 
   if [[ "$PACKAGE_MANAGER" == "brew" ]]; then
@@ -591,10 +643,12 @@ install_neovim() {
 
   case "$os_name" in
     Linux)
-      url="https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$arch.tar.gz"
+      primary_url="https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$arch.tar.gz"
+      fallback_url="https://github.com/neovim/neovim-releases/releases/latest/download/nvim-linux-$arch.tar.gz"
       ;;
     Darwin)
-      url="https://github.com/neovim/neovim/releases/latest/download/nvim-macos-$arch.tar.gz"
+      primary_url="https://github.com/neovim/neovim/releases/latest/download/nvim-macos-$arch.tar.gz"
+      fallback_url=""
       ;;
     *)
       printf 'Unsupported OS for Neovim archive: %s\n' "$os_name" >&2
@@ -602,12 +656,19 @@ install_neovim() {
       ;;
   esac
 
-  archive="$SCRATCH_DIR/nvim.tar.gz"
-  rm -rf "$SCRATCH_DIR/nvim-extract" "$PERSIST_DIR/neovim" || return 1
-  mkdir -p "$SCRATCH_DIR/nvim-extract" "$PERSIST_DIR/neovim" "$BIN_DIR" || return 1
-  curl -fL "$url" -o "$archive" || return 1
-  tar -xzf "$archive" -C "$PERSIST_DIR/neovim" --strip-components=1 || return 1
-  ln -sfn "$PERSIST_DIR/neovim/bin/nvim" "$BIN_DIR/nvim" || return 1
+  install_neovim_archive "$primary_url" || return 1
+  if validate_neovim; then
+    return 0
+  fi
+
+  if [[ -n "$fallback_url" ]]; then
+    printf 'Primary Neovim binary did not run on this system; trying older-glibc build.\n'
+    install_neovim_archive "$fallback_url" || return 1
+    validate_neovim && return 0
+  fi
+
+  printf 'Neovim was installed but could not run. Check glibc compatibility or build Neovim locally.\n' >&2
+  return 1
 }
 
 tree_sitter_version() {
@@ -630,12 +691,87 @@ tree_sitter_asset_arch() {
   esac
 }
 
+validate_rust_toolchain() {
+  command -v cargo >/dev/null 2>&1 || return 1
+  command -v rustc >/dev/null 2>&1 || return 1
+}
+
+install_rust_toolchain() {
+  PACKAGES=()
+
+  if validate_rust_toolchain; then
+    return 0
+  fi
+
+  case "$PACKAGE_MANAGER" in
+    apt)
+      add_pkg_if_missing cargo cargo
+      add_pkg_if_missing rustc rustc
+      dedupe_packages
+      install_packages "${PACKAGES[@]}" || return 1
+      ;;
+    dnf)
+      add_pkg_if_missing cargo cargo
+      add_pkg_if_missing rustc rust
+      dedupe_packages
+      install_packages "${PACKAGES[@]}" || return 1
+      ;;
+    yum)
+      add_pkg_if_missing cargo cargo
+      add_pkg_if_missing rustc rust
+      dedupe_packages
+      if ! install_packages "${PACKAGES[@]}"; then
+        command -v amazon-linux-extras >/dev/null 2>&1 || return 1
+        "${SUDO_CMD[@]}" amazon-linux-extras install -y rust1 || return 1
+      fi
+      ;;
+    brew)
+      add_pkg_if_missing cargo rust
+      add_pkg_if_missing rustc rust
+      dedupe_packages
+      install_packages "${PACKAGES[@]}" || return 1
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  validate_rust_toolchain
+}
+
+install_tree_sitter_cli_from_source() {
+  local install_root="$PERSIST_DIR/tree-sitter-cli"
+
+  install_rust_toolchain || return 1
+  rm -rf "$install_root" || return 1
+  mkdir -p "$PERSIST_DIR/cargo" "$install_root" "$BIN_DIR" || return 1
+  CARGO_HOME="$PERSIST_DIR/cargo" cargo install tree-sitter-cli --locked --root "$install_root" || return 1
+  ln -sfn "$install_root/bin/tree-sitter" "$BIN_DIR/tree-sitter" || return 1
+}
+
+install_tree_sitter_cli_from_package_manager() {
+  local package_name
+
+  for package_name in tree-sitter-cli tree-sitter; do
+    if package_available "$package_name"; then
+      install_packages "$package_name" || continue
+      validate_tree_sitter_cli && return 0
+    fi
+  done
+
+  return 1
+}
+
 install_tree_sitter_cli() {
   local os_name arch url archive extract_dir binary_path
   os_name="$(uname -s)"
 
   if [[ "$PACKAGE_MANAGER" == "brew" ]]; then
     brew install tree-sitter-cli || brew upgrade tree-sitter-cli || return 1
+    return 0
+  fi
+
+  if install_tree_sitter_cli_from_package_manager; then
     return 0
   fi
 
@@ -666,11 +802,20 @@ install_tree_sitter_cli() {
   [[ -n "$binary_path" ]] || return 1
   cp "$binary_path" "$BIN_DIR/tree-sitter" || return 1
   chmod +x "$BIN_DIR/tree-sitter" || return 1
+
+  if validate_tree_sitter_cli; then
+    return 0
+  fi
+
+  printf 'Prebuilt tree-sitter CLI did not run on this system; building from source with Cargo.\n'
+  install_tree_sitter_cli_from_source || return 1
+  validate_tree_sitter_cli
 }
 
 validate_lazyvim() {
-  [[ -f "$HOME/.config/nvim/lazyvim.json" ]] || return 1
+  [[ -f "$HOME/.config/nvim/init.lua" ]] || return 1
   [[ -f "$HOME/.config/nvim/lua/config/lazy.lua" ]] || return 1
+  grep -Fq "LazyVim/LazyVim" "$HOME/.config/nvim/lua/config/lazy.lua" || return 1
 }
 
 install_lazyvim() {
@@ -721,7 +866,11 @@ run_tmux_setup() {
 run_neovim_setup() {
   run_step install_neovim_packages validate_neovim_packages install_neovim_packages
   run_step install_neovim validate_neovim install_neovim
-  run_step install_tree_sitter_cli validate_tree_sitter_cli install_tree_sitter_cli
+  if (( SKIP_TREE_SITTER == 1 )); then
+    log "Skipping tree-sitter CLI setup by request."
+  else
+    run_optional_step install_tree_sitter_cli validate_tree_sitter_cli install_tree_sitter_cli
+  fi
   run_step configure_terminal_setup_path validate_terminal_setup_path write_terminal_setup_path
   run_step install_lazyvim validate_lazyvim install_lazyvim
 }
