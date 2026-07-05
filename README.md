@@ -28,11 +28,14 @@ Flags can be combined:
 ## What It Installs
 
 - Oh My Zsh with autosuggestions and syntax highlighting
-- tmux with TPM, Dracula theme, and selected plugins
+- tmux with TPM, Dracula theme, vim-style pane navigation, mouse mode, and selected plugins
 - Neovim with LazyVim
 
 Tree-sitter CLI is attempted for LazyVim parser tooling, but it is optional for this script.
 Use `--skip-tree-sitter` if the machine is too old for available binaries/packages.
+
+The generated tmux status bar uses Dracula widgets for network/Wi-Fi, weather with location
+and temperature, and date/time.
 
 ## Files
 

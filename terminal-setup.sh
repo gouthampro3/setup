@@ -358,6 +358,11 @@ validate_tmux_packages() {
   command -v tmux >/dev/null 2>&1 || return 1
   command -v git >/dev/null 2>&1 || return 1
   command -v entr >/dev/null 2>&1 || return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v ping >/dev/null 2>&1 || return 1
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    command -v iw >/dev/null 2>&1 || return 1
+  fi
 }
 
 install_tmux_packages() {
@@ -365,6 +370,19 @@ install_tmux_packages() {
   add_pkg_if_missing tmux tmux
   add_pkg_if_missing git git
   add_pkg_if_missing entr entr
+  add_pkg_if_missing curl curl
+
+  case "$PACKAGE_MANAGER" in
+    apt)
+      add_pkg_if_missing ping iputils-ping
+      [[ "$(uname -s)" == "Linux" ]] && add_pkg_if_missing iw iw
+      ;;
+    dnf|yum)
+      add_pkg_if_missing ping iputils
+      [[ "$(uname -s)" == "Linux" ]] && add_pkg_if_missing iw iw
+      ;;
+  esac
+
   dedupe_packages
   install_packages "${PACKAGES[@]}" || return 1
 }
@@ -537,7 +555,12 @@ validate_tmux_conf() {
   [[ -f "$conf" ]] || return 1
   grep -Fq "# terminal-setup managed tmux config" "$conf" || return 1
   grep -Fq "set -g prefix M-c" "$conf" || return 1
+  grep -Fq "set -g mouse on" "$conf" || return 1
+  grep -Fq "bind h select-pane -L" "$conf" || return 1
+  grep -Fq "set-window-option -g mode-keys vi" "$conf" || return 1
+  grep -Fq "set -g @dracula-plugins \"network weather time\"" "$conf" || return 1
   grep -Fq "tmux-plugins/tmux-sensible" "$conf" || return 1
+  grep -Fq "christoomey/vim-tmux-navigator" "$conf" || return 1
   grep -Fq "b0o/tmux-autoreload" "$conf" || return 1
   grep -Fq "jaclu/tmux-menus" "$conf" || return 1
   grep -Fq "tmux-plugins/tmux-sidebar" "$conf" || return 1
@@ -553,14 +576,66 @@ write_tmux_conf() {
   cat >"$HOME/.tmux.conf" <<'EOF'
 # terminal-setup managed tmux config
 
+# Terminal behavior.
+set-option -sa terminal-overrides ",xterm*:Tc"
+set -g mouse on
+
 # Use tmux-sensible defaults through TPM, with the requested prefix override.
 unbind C-b
 unbind C-c
 set -g prefix M-c
 bind M-c send-prefix
 
+# Vim-style pane navigation.
+bind h select-pane -L
+bind j select-pane -D
+bind k select-pane -U
+bind l select-pane -R
+bind -n M-Left select-pane -L
+bind -n M-Right select-pane -R
+bind -n M-Up select-pane -U
+bind -n M-Down select-pane -D
+
+# Window navigation and numbering.
+bind -n S-Left previous-window
+bind -n S-Right next-window
+bind -n M-H previous-window
+bind -n M-L next-window
+set -g base-index 1
+set -g pane-base-index 1
+set-window-option -g pane-base-index 1
+set-option -g renumber-windows on
+
+# Vi-style copy mode.
+set-window-option -g mode-keys vi
+bind-key -T copy-mode-vi v send-keys -X begin-selection
+bind-key -T copy-mode-vi C-v send-keys -X rectangle-toggle
+bind-key -T copy-mode-vi y send-keys -X copy-selection-and-cancel
+
+# Split panes from the active pane's current directory.
+bind '"' split-window -v -c "#{pane_current_path}"
+bind % split-window -h -c "#{pane_current_path}"
+
+# Dracula status bar widgets.
+set -g status-position bottom
+set -g @dracula-plugins "network weather time"
+set -g @dracula-refresh-rate 5
+set -g @dracula-show-powerline true
+set -g @dracula-show-flags true
+set -g @dracula-show-empty-plugins false
+set -g @dracula-network-hosts "1.1.1.1 8.8.8.8 google.com github.com"
+set -g @dracula-network-wifi-label "WiFi "
+set -g @dracula-network-ethernet-label "Ethernet"
+set -g @dracula-network-offline-label "Offline"
+set -g @dracula-show-fahrenheit true
+set -g @dracula-show-location true
+set -g @dracula-weather-hide-errors true
+set -g @dracula-show-timezone false
+set -g @dracula-time-format "%a %b %d %I:%M %p"
+
 set -g @plugin 'tmux-plugins/tpm'
 set -g @plugin 'tmux-plugins/tmux-sensible'
+set -g @plugin 'christoomey/vim-tmux-navigator'
 set -g @plugin 'b0o/tmux-autoreload'
 set -g @plugin 'jaclu/tmux-menus'
 set -g @plugin 'tmux-plugins/tmux-sidebar'
@@ -581,11 +656,34 @@ validate_tmux_plugins() {
   [[ -d "$HOME/.tmux/plugins/tmux-mighty-scroll" ]] || return 1
   [[ -d "$HOME/.tmux/plugins/tmux-resurrect" ]] || return 1
   [[ -d "$HOME/.tmux/plugins/tmux-prefix-highlight" ]] || return 1
+  [[ -d "$HOME/.tmux/plugins/vim-tmux-navigator" ]] || return 1
   [[ -d "$HOME/.tmux/plugins/tmux" ]] || return 1
 }
 
+install_tmux_plugin_repo() {
+  local repo="$1"
+  local dirname="$2"
+  local target="$HOME/.tmux/plugins/$dirname"
+
+  if [[ -e "$target" ]]; then
+    return 0
+  fi
+
+  git clone --depth=1 "https://github.com/$repo" "$target" || return 1
+}
+
 install_tmux_plugins() {
-  "$HOME/.tmux/plugins/tpm/bin/install_plugins" || return 1
+  mkdir -p "$HOME/.tmux/plugins" || return 1
+
+  install_tmux_plugin_repo tmux-plugins/tmux-sensible tmux-sensible || return 1
+  install_tmux_plugin_repo christoomey/vim-tmux-navigator vim-tmux-navigator || return 1
+  install_tmux_plugin_repo b0o/tmux-autoreload tmux-autoreload || return 1
+  install_tmux_plugin_repo jaclu/tmux-menus tmux-menus || return 1
+  install_tmux_plugin_repo tmux-plugins/tmux-sidebar tmux-sidebar || return 1
+  install_tmux_plugin_repo noscript/tmux-mighty-scroll tmux-mighty-scroll || return 1
+  install_tmux_plugin_repo tmux-plugins/tmux-resurrect tmux-resurrect || return 1
+  install_tmux_plugin_repo tmux-plugins/tmux-prefix-highlight tmux-prefix-highlight || return 1
+  install_tmux_plugin_repo dracula/tmux tmux || return 1
 
   if tmux list-sessions >/dev/null 2>&1; then
     tmux source-file "$HOME/.tmux.conf" || true
